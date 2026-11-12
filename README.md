@@ -9,8 +9,8 @@ found yourself are trusted over the imported ones, and are drawn so you can tell
 There is no settings window and no library dependency: one Lua file, a data file, and a few chat
 commands.
 
-> Early version (0.1.0). It is in use on the Forever beta, but expect rough edges. Bug reports are
-> welcome.
+> Early version (0.1.0), used on the WoW Forever release (build 1.60.1.70888). Expect some rough
+> edges. Bug reports are welcome.
 
 ## Install
 

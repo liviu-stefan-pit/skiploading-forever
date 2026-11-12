@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: Skip Loading
+## Notes: Very light ore and herb locations on the map and minimap. /sl
+## Version: 0.1.0
+## X-Website: https://github.com/liviu-stefan-pit/skiploading-forever
+## X-License: MIT (code). Location data derived from GatherMate2_Data, see CREDITS.md
+## IconTexture: Interface\Icons\Trade_Mining
+## SavedVariables: SkipLoadingForeverDataSet, SkipLoadingDB
+
+Seed.lua
+Shared.lua
+SkipLoading.lua

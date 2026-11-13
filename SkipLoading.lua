@@ -1,158 +1,127 @@
--- Skip Loading: ore and herb locations on the world map and minimap.
+-- Skip Loading: things in the world (ores, herbs ...) on the world map and minimap.
+--
+-- This file is the core: dataset, pins, map, minimap, recording, sharing and commands. It knows
+-- nothing about any particular kind of thing. Each kind is a short definition in Kinds\ that calls
+-- ns.RegisterKind (see "kinds" below for what a definition holds).
 --
 -- SkipLoadingForeverDataSet (saved variable) is the working dataset:
---   DS.ores / DS.herbs = { [uiMapID] = { [coord] = node } }
+--   DS[key] = { [uiMapID] = { [coord] = node } }, key = a kind's key ("ores", "herbs" ...)
 --   coord = x * 1000000 + y * 100 + slot, x and y in 0.01% of the map
 --   node  = a number: a node id imported from the seed, never seen by you
---         = a table:  { id, seen, first, last, build, gap }, a node you gathered yourself
+--         = a table:  { id, seen, first, last, build, gap }, a node you recorded yourself
 --           (gap = shortest time in seconds between two sightings)
 --         = a table with shared = true: a node other players found, merged in from Shared.lua
--- A node you gather replaces the imported points of the same type around it.
-local ADDON = ...
+-- A node you record replaces the imported points of the same type around it.
+-- SkipLoadingDB (saved variable) holds settings: SkipLoadingDB[key] = true when a kind is shown.
+local ADDON, ns = ...
 
-local floor, sin, cos, pairs, type, time = math.floor, math.sin, math.cos, pairs, type, time
+local floor, sin, cos, huge, pairs, ipairs, type, time = math.floor, math.sin, math.cos, math.huge, pairs, ipairs, type, time
 
-local SAME_NODE = 15      -- yards: a gather this close to one of your own nodes is that node again
+local SAME_NODE = 15      -- yards: a record this close to one of your own nodes is that node again
 local ABSORB = 25         -- yards: the nearest imported point of the same type this close to your node is dropped
 local RECOUNT = 300       -- seconds before the same node counts as seen again (a node takes several hits)
-local DEPLETED = 300      -- seconds a node you just gathered is drawn greyed out
-local TICK = 0.05         -- seconds between minimap position updates
+local DEPLETED = 300      -- seconds a node you just recorded is drawn greyed out
+local TICK = 0.05         -- seconds between minimap position updates while something is moving
+local IDLE_TICK = 0.25    -- the same once nothing has moved for a second
+local SETTINGS = 0.5      -- seconds between re-reads of the minimap's zoom, size and rotation setting
 local MAP_MINE, MAP_SEED = 18, 13          -- world map pin sizes: your nodes, imported nodes
 local MINIMAP_MINE, MINIMAP_SEED = 15, 12 -- minimap pin sizes
-local RESCAN = 1          -- seconds between searches for the nodes around you
+local DRIFT = 40          -- yards you can move before the nodes around you are searched for again
+local MARGIN = 60         -- yards past the minimap's edge that a search covers; must be more than DRIFT
 
 local BUILD = tonumber((select(2, GetBuildInfo()))) or 0
 
--- node id -> { name, item id used for the icon }; ids match GatherMate2
-local NODES = {
-  [201] = { "Copper Vein", 2770 },                   [202] = { "Tin Vein", 2771 },
-  [203] = { "Iron Deposit", 2772 },                  [204] = { "Silver Vein", 2775 },
-  [205] = { "Gold Vein", 2776 },                     [206] = { "Mithril Deposit", 3858 },
-  [207] = { "Ooze Covered Mithril Deposit", 3858 },  [208] = { "Truesilver Deposit", 7911 },
-  [209] = { "Ooze Covered Silver Vein", 2775 },      [210] = { "Ooze Covered Gold Vein", 2776 },
-  [211] = { "Ooze Covered Truesilver Deposit", 7911 }, [212] = { "Ooze Covered Rich Thorium Vein", 10620 },
-  [213] = { "Ooze Covered Thorium Vein", 10620 },    [214] = { "Small Thorium Vein", 10620 },
-  [215] = { "Rich Thorium Vein", 10620 },            [216] = { "Hakkari Thorium Vein", 10620 },
-  [217] = { "Dark Iron Deposit", 11370 },            [218] = { "Lesser Bloodstone Deposit", 4278 },
-  [219] = { "Incendicite Mineral Vein", 3340 },      [220] = { "Indurium Mineral Vein", 5833 },
-
-  [401] = { "Peacebloom", 2447 },        [402] = { "Silverleaf", 765 },
-  [403] = { "Earthroot", 2449 },         [404] = { "Mageroyal", 785 },
-  [405] = { "Briarthorn", 2450 },        [407] = { "Stranglekelp", 3820 },
-  [408] = { "Bruiseweed", 2453 },        [409] = { "Wild Steelbloom", 3355 },
-  [410] = { "Grave Moss", 3369 },        [411] = { "Kingsblood", 3356 },
-  [412] = { "Liferoot", 3357 },          [413] = { "Fadeleaf", 3818 },
-  [414] = { "Goldthorn", 3821 },         [415] = { "Khadgar's Whisker", 3358 },
-  [416] = { "Wintersbite", 3819 },       [417] = { "Firebloom", 4625 },
-  [418] = { "Purple Lotus", 8831 },      [420] = { "Arthas' Tears", 8836 },
-  [421] = { "Sungrass", 8838 },          [422] = { "Blindweed", 8839 },
-  [423] = { "Ghost Mushroom", 8845 },    [424] = { "Gromsblood", 8846 },
-  [425] = { "Golden Sansam", 13464 },    [426] = { "Dreamfoil", 13463 },
-  [427] = { "Mountain Silversage", 13465 }, [428] = { "Plaguebloom", 13466 },
-  [429] = { "Icecap", 13467 },           [431] = { "Black Lotus", 13468 },
-}
--- node id -> skill needed (Classic values; Forever may have changed some)
-local REQ = {
-  [201] = 1, [202] = 65, [203] = 125, [204] = 75, [205] = 155, [206] = 175, [207] = 175, [208] = 230,
-  [209] = 75, [210] = 155, [211] = 230, [212] = 275, [213] = 245, [214] = 245, [215] = 275, [216] = 275,
-  [217] = 230, [218] = 75, [219] = 65, [220] = 150,
-  [401] = 1, [402] = 1, [403] = 15, [404] = 50, [405] = 70, [407] = 85, [408] = 100, [409] = 115,
-  [410] = 120, [411] = 125, [412] = 150, [413] = 160, [414] = 170, [415] = 185, [416] = 195, [417] = 205,
-  [418] = 210, [420] = 220, [421] = 230, [422] = 235, [423] = 245, [424] = 250, [425] = 260, [426] = 270,
-  [427] = 280, [428] = 285, [429] = 290, [431] = 300,
-}
-local FALLBACK_ICON ={ ores = "Interface\\Icons\\Trade_Mining", herbs = "Interface\\Icons\\INV_Misc_Flower_02" }
-local GATHER_SPELLS = {
-  [2575] = "ores", [2576] = "ores", [3564] = "ores", [10248] = "ores",
-  [2366] = "herbs", [2368] = "herbs", [3570] = "herbs", [11993] = "herbs",
-}
-
-local NAME_TO_ID = { ores = {}, herbs = {} }
-for id, n in pairs(NODES) do NAME_TO_ID[id < 400 and "ores" or "herbs"][n[1]:lower()] = id end
-
 local DS, cfg
 local function say(msg) print("|cff66ccffSkip Loading:|r " .. msg) end
+ns.say = say
 
----------------------------------------------------------------- helpers
 local function SpellName(id)
   if C_Spell and C_Spell.GetSpellName then return C_Spell.GetSpellName(id) end
   if GetSpellInfo then return (GetSpellInfo(id)) end
 end
-local MINING, HERBING = SpellName(2575), SpellName(2366)
+ns.SpellName = SpellName
 
-local function SpellKind(id)
-  if not id then return end
-  if GATHER_SPELLS[id] then return GATHER_SPELLS[id] end
-  local name = SpellName(id)
-  if name and name == MINING then return "ores" end
-  if name and name == HERBING then return "herbs" end
+---------------------------------------------------------------- kinds
+-- A kind is one sort of thing the addon shows. Its definition, the table given to ns.RegisterKind:
+--   key           its table in the dataset and its show/hide setting, e.g. "ores". Never rename it:
+--                 saved data and Shared.lua files are stored under it.
+--   words         what /sl show and /sl hide accept for it besides the key, e.g. { "ore", "mining" }
+--   nodes         { [id] = { name, icon, ... } }: icon is an item id or a texture; the fields after
+--                 those two are the kind's own (the gathering kinds keep the skill needed there)
+--   fallbackIcon  texture for a thing whose id is not in `nodes`, or whose item icon is not loaded
+--   shown         optional: false to start hidden for new users (default shown)
+--   spells        optional: spell ids whose cast target is the name of a thing of this kind
+--   spellNames    optional: spell names that count the same, for ranks the ids above miss
+--   Tooltip       optional: function(def, id) adding the first tooltip lines; default is the name
+--   events        optional: { EVENT = function(def, ...) } for kinds detected some other way;
+--                 they call ns.Record(def.key, name) to record a thing where the player stands
+-- Kinds register while the addon's files load, before ADDON_LOADED, and draw in that order.
+local KINDS, BY_KEY, BY_WORD = {}, {}, {}
+local SPELL_IDS, SPELL_NAMES = {}, {}
+local RESERVED = { version = true, source = true, sharedStamp = true } -- other fields of the dataset
+ns.kinds = KINDS
+
+function ns.RegisterKind(def)
+  local key = def.key
+  assert(type(key) == "string" and not RESERVED[key] and not BY_KEY[key],
+    "Skip Loading: kind key missing, reserved or used twice: " .. tostring(key))
+  assert(type(def.nodes) == "table", "Skip Loading: kind " .. key .. " has no nodes table")
+  -- name -> id, for turning what the game calls a thing into its id
+  def.byName = {}
+  for id, n in pairs(def.nodes) do def.byName[n[1]:lower()] = id end
+  for _, word in ipairs({ key, unpack(def.words or {}) }) do
+    assert(not BY_WORD[word] or BY_WORD[word] == def, "Skip Loading: word '" .. word .. "' used by two kinds")
+    BY_WORD[word] = def
+  end
+  for _, id in ipairs(def.spells or {}) do SPELL_IDS[id] = def end
+  for _, name in pairs(def.spellNames or {}) do SPELL_NAMES[name] = def end
+  KINDS[#KINDS + 1], BY_KEY[key] = def, def
+  return def
 end
 
-local function NodeName(id)
-  local n = NODES[id]
+-- extra /sl verbs from kind files: run(rest of the line); help is shown under /sl when given
+local COMMANDS, COMMAND_HELP = {}, {}
+function ns.RegisterCommand(verb, run, help)
+  COMMANDS[verb] = run
+  if help then COMMAND_HELP[#COMMAND_HELP + 1] = help end
+end
+
+---------------------------------------------------------------- helpers
+-- asked for every spell you cast, so the answer is kept per spell id (false = no kind's spell)
+local spellKind = {}
+local function SpellKind(id)
+  if not id then return end
+  local def = spellKind[id]
+  if def == nil then
+    def = SPELL_IDS[id] or false
+    local name = not def and SpellName(id)
+    if name then def = SPELL_NAMES[name] or false end
+    if def or name then spellKind[id] = def end
+  end
+  return def or nil
+end
+
+local function NodeName(def, id)
+  local n = def.nodes[id]
   return n and n[1] or tostring(id)
 end
 
--- your current skill (with racial and gear bonuses), or nil if you don't have the profession
-local SKILL_NAME = { ores = MINING or "Mining", herbs = SpellName(9134) or "Herbalism" }
-local SKILL_LINE = { ores = 186, herbs = 182 }
-local SKILL_NAMES = {
-  ores = { [SKILL_NAME.ores] = true, Mining = true },
-  herbs = { [SKILL_NAME.herbs] = true, Herbalism = true, [HERBING or "Herb Gathering"] = true },
-}
--- the client offers this in different ways depending on its version, so try each; returns skill, source
-local function PlayerSkill(kind)
-  local line = SKILL_LINE[kind]
-  if C_SkillInfo and C_SkillInfo.GetSkillLineInfoByID then
-    local ok, info = pcall(C_SkillInfo.GetSkillLineInfoByID, line)
-    if ok and type(info) == "table" and info.rank then return info.rank + (info.modifier or 0), "C_SkillInfo" end
-  end
-  if C_TradeSkillUI and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
-    local ok, info = pcall(C_TradeSkillUI.GetProfessionInfoBySkillLineID, line)
-    if ok and type(info) == "table" and (info.skillLevel or 0) > 0 then
-      return info.skillLevel + (info.skillModifier or 0), "C_TradeSkillUI"
-    end
-  end
-  if GetNumSkillLines and GetSkillLineInfo then
-    for i = 1, GetNumSkillLines() do
-      local name, isHeader, _, rank, _, modifier = GetSkillLineInfo(i)
-      if not isHeader and SKILL_NAMES[kind][name] then return (rank or 0) + (modifier or 0), "skill list" end
-    end
-  end
+local GetIcon = (C_Item and C_Item.GetItemIconByID) or GetItemIcon
+local function NodeIcon(def, id)
+  local n = def.nodes[id]
+  local icon = n and n[2]
+  if type(icon) == "number" then icon = GetIcon and GetIcon(icon) end
+  return icon or def.fallbackIcon
 end
 
--- the game's own difficulty colours: red can't, orange always skills up, yellow often, green rarely, grey never
-local function Difficulty(req, skill)
-  if not skill or skill < req then return 1, 0.13, 0.13 end
-  if skill < req + 25 then return 1, 0.5, 0.25 end
-  if skill < req + 50 then return 1, 1, 0 end
-  if skill < req + 100 then return 0.25, 0.75, 0.25 end
-  return 0.5, 0.5, 0.5
-end
-
-local function AddSkillLines(id, kind)
-  local req, skill = REQ[id], PlayerSkill(kind)
-  local r, g, b = 1, 0.82, 0
-  if req then r, g, b = Difficulty(req, skill) end
-  GameTooltip:AddLine(NodeName(id), r, g, b)
-  if not req then return end
-  if skill then
-    GameTooltip:AddLine(("Needs %s %d (yours: %d)"):format(SKILL_NAME[kind], req, skill), r, g, b)
-  else
-    GameTooltip:AddLine(("Needs %s %d (you don't have it)"):format(SKILL_NAME[kind], req), r, g, b)
-  end
-end
-
-local GetIcon =(C_Item and C_Item.GetItemIconByID) or GetItemIcon
-local function NodeIcon(id, kind)
-  local n = NODES[id]
-  return (n and GetIcon and GetIcon(n[2])) or FALLBACK_ICON[kind]
+local function DefaultTooltip(def, id)
+  GameTooltip:AddLine(NodeName(def, id), 1, 0.82, 0)
 end
 
 -- "Wilted Peacebloom" is a Peacebloom: drop leading words until the name is a known node.
 -- A node nobody knows yet is stored under its own name.
-local function ResolveNode(kind, name)
-  local names, l = NAME_TO_ID[kind], name:lower()
+local function ResolveNode(def, name)
+  local names, l = def.byName, name:lower()
   while l do
     if names[l] then return names[l] end
     l = l:match("^%S+%s+(.+)$")
@@ -206,28 +175,38 @@ local function Ago(t)
   return Span(s) .. " ago"
 end
 
--- every node to draw on one map, as { x, y, kind, node }
+-- every node to draw on one map, as { x, y, def, node }
 local function BuildList(mapID)
   local list = {}
-  for kind in pairs(NAME_TO_ID) do
-    local zone = cfg[kind] and DS[kind][mapID]
+  for _, def in ipairs(KINDS) do
+    local zone = cfg[def.key] and DS[def.key][mapID]
     if zone then
       for coord, node in pairs(zone) do
         local x, y = Decode(coord)
-        list[#list + 1] = { x = x, y = y, kind = kind, node = node }
+        list[#list + 1] = { x = x, y = y, def = def, node = node }
       end
     end
   end
   return list
 end
 
+local function AnyShown()
+  for _, def in ipairs(KINDS) do
+    if cfg[def.key] then return true end
+  end
+  return false
+end
+
 ---------------------------------------------------------------- pins
 local function PinEnter(self)
-  local node = self.entry and self.entry.node
+  local entry = self.entry
+  local node = entry and entry.node
   if not node then return end
+  local def = entry.def
   GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  local tooltip = def.Tooltip or DefaultTooltip
   if type(node) == "table" then
-    AddSkillLines(node.id, self.entry.kind)
+    tooltip(def, node.id)
     GameTooltip:AddLine(("%s %d time%s, last %s"):format(node.shared and "Found by other players" or "Seen",
       node.seen, node.seen == 1 and "" or "s", Ago(node.last)), 1, 1, 1)
     if node.gap and node.gap < 86400 then
@@ -237,7 +216,7 @@ local function PinEnter(self)
       GameTooltip:AddLine("Not seen since game build " .. node.build, 0.6, 0.6, 0.6)
     end
   else
-    AddSkillLines(node, self.entry.kind)
+    tooltip(def, node)
     GameTooltip:AddLine("Imported, not seen by you yet", 0.6, 0.6, 0.6)
   end
   GameTooltip:Show()
@@ -275,7 +254,7 @@ local function StylePin(pin, entry, mineSize, seedSize, seedAlpha, level)
   local node = entry.node
   pin.entry = entry
   if type(node) == "table" then
-    pin.tex:SetTexture(NodeIcon(node.id, entry.kind))
+    pin.tex:SetTexture(NodeIcon(entry.def, node.id))
     pin.tex:SetDesaturated(not node.shared and time() - node.last < DEPLETED)
     if node.shared then pin.ring:SetColorTexture(0.8, 0.8, 0.85) else pin.ring:SetColorTexture(1, 0.82, 0) end
     pin.ring:Show()
@@ -283,13 +262,22 @@ local function StylePin(pin, entry, mineSize, seedSize, seedAlpha, level)
     pin:SetAlpha(node.build == BUILD and 1 or 0.8)
     pin:SetFrameLevel(level + (node.shared and 1 or 2))
   else
-    pin.tex:SetTexture(NodeIcon(node, entry.kind))
+    pin.tex:SetTexture(NodeIcon(entry.def, node))
     pin.tex:SetDesaturated(false)
     pin.ring:Hide()
     pin:SetSize(seedSize, seedSize)
     pin:SetAlpha(seedAlpha)
     pin:SetFrameLevel(level)
   end
+end
+
+-- when the soonest greyed-out node gets its colour back: `soonest`, or this node's time if earlier
+local function GreyUntil(node, now, soonest)
+  if type(node) == "table" and not node.shared then
+    local t = node.last + DEPLETED
+    if t > now and t < soonest then return t end
+  end
+  return soonest
 end
 
 ---------------------------------------------------------------- minimap
@@ -305,13 +293,14 @@ local function MinimapRadius()
   return (indoors and RADIUS_IN or RADIUS_OUT)[zoom] or 233.33
 end
 
-local mm = { pins = {}, near = {}, list = {}, dirty = true, sinceScan = 0 }
+local mm = { pins = {}, near = {}, list = {}, dirty = true, settings = 0, expire = huge }
 
 local function HideMinimapPins()
   for i = 1, #mm.pins do mm.pins[i]:Hide() end
   mm.lastX = nil
 end
 
+-- returns true if anything was redrawn
 local function UpdateMinimap(elapsed)
   local mapID, px, py = PlayerPos()
   local w, h
@@ -321,36 +310,47 @@ local function UpdateMinimap(elapsed)
     return
   end
 
-  local radius = MinimapRadius()
-  local rescan = mm.dirty or mapID ~= mm.mapID or radius ~= mm.radius
+  -- these rarely change: read them now and then, and at once when the minimap is zoomed
+  mm.settings = mm.settings - elapsed
+  if mm.settings <= 0 then
+    mm.settings = SETTINGS
+    mm.zoomRadius, mm.rotate, mm.half = MinimapRadius(), GetCVar("rotateMinimap") == "1", Minimap:GetWidth() / 2
+  end
+  local radius, now = mm.zoomRadius, time()
+
   if mm.dirty or mapID ~= mm.mapID then
     mm.list, mm.mapID, mm.dirty = BuildList(mapID), mapID, false
+    mm.scanX = nil
   end
-  mm.sinceScan = mm.sinceScan + elapsed
 
+  -- search for the nodes around you only after you moved, zoomed, or a greyed-out node is due back
   local near, pins = mm.near, mm.pins
-  if rescan or mm.sinceScan >= RESCAN then
-    mm.sinceScan, mm.radius = 0, radius
-    local reach = (radius + 60) ^ 2 -- margin for the ground covered until the next scan
-    local n, level = 0, Minimap:GetFrameLevel() + 5
-    for i = 1, #mm.list do
-      local e = mm.list[i]
+  local restyle = now >= mm.expire
+  if not mm.scanX or restyle or radius ~= mm.radius
+    or ((px - mm.scanX) * w) ^ 2 + ((py - mm.scanY) * h) ^ 2 > DRIFT * DRIFT then
+    mm.scanX, mm.scanY, mm.radius = px, py, radius
+    local reach = (radius + MARGIN) ^ 2
+    local list, n, level, expire = mm.list, 0, Minimap:GetFrameLevel() + 5, huge
+    for i = 1, #list do
+      local e = list[i]
       local dx, dy = (e.x - px) * w, (e.y - py) * h
       if dx * dx + dy * dy < reach then
         n = n + 1
         near[n] = e
         local pin = pins[n]
         if not pin then pin = NewPin(Minimap); pins[n] = pin end
-        StylePin(pin, e, MINIMAP_MINE, MINIMAP_SEED, 0.5, level)
+        if restyle or pin.entry ~= e then StylePin(pin, e, MINIMAP_MINE, MINIMAP_SEED, 0.5, level) end
+        expire = GreyUntil(e.node, now, expire)
       end
     end
     for i = n + 1, #near do near[i] = nil end
     for i = n + 1, #pins do pins[i]:Hide() end
+    mm.expire = expire
     mm.lastX = nil
   end
 
-  local facing = GetCVar("rotateMinimap") == "1" and GetPlayerFacing() or 0
-  local half = Minimap:GetWidth() / 2
+  local facing = mm.rotate and GetPlayerFacing() or 0
+  local half = mm.half
   if px == mm.lastX and py == mm.lastY and facing == mm.lastFacing and half == mm.lastHalf then return end
   mm.lastX, mm.lastY, mm.lastFacing, mm.lastHalf = px, py, facing, half
 
@@ -366,32 +366,60 @@ local function UpdateMinimap(elapsed)
       pin:Show()
     end
   end
+  return true
 end
 
+-- updates run every TICK while something changes, and every IDLE_TICK once nothing has for a second
 local driver = CreateFrame("Frame")
 driver:Hide()
-local acc = 0
+local acc, interval, still = 0, TICK, 0
 driver:SetScript("OnUpdate", function(_, elapsed)
   acc = acc + elapsed
-  if acc < TICK then return end
-  UpdateMinimap(acc)
+  if acc < interval then return end
+  if UpdateMinimap(acc) then
+    interval, still = TICK, 0
+  else
+    still = still + acc
+    if still >= 1 then interval = IDLE_TICK end
+  end
   acc = 0
 end)
 
+-- back to full speed at once: you started moving or turning, or the minimap was zoomed
+local function Wake()
+  mm.settings, interval, still = 0, TICK, 0
+end
+hooksecurefunc(Minimap, "SetZoom", Wake)
+
 ---------------------------------------------------------------- world map
-local wm = { pins = {} }
+local wm = { pins = {}, shown = 0, dirty = true, expire = huge }
 
 local function UpdateWorldMap()
   if not WorldMapFrame or not WorldMapFrame:IsShown() then return end
   local canvas = WorldMapFrame:GetCanvas()
   local mapID = WorldMapFrame:GetMapID()
-  local list = mapID and BuildList(mapID) or {}
-  local pins = wm.pins
+  local cw, ch = canvas:GetSize()
+  -- the canvas is scaled to fit the window: size pins so they stay the same size on screen
+  local unit = UIParent:GetEffectiveScale() / canvas:GetEffectiveScale()
+  local pins, now = wm.pins, time()
 
+  -- same map and same nodes as last time: at most the zoom changed, so only the pin sizes need it
+  if not wm.dirty and mapID == wm.mapID and cw == wm.cw and ch == wm.ch and now < wm.expire then
+    if unit ~= wm.unit then
+      wm.unit = unit
+      local mine, seed = MAP_MINE * unit, MAP_SEED * unit
+      for i = 1, wm.shown do
+        local size = type(pins[i].entry.node) == "table" and mine or seed
+        pins[i]:SetSize(size, size)
+      end
+    end
+    return
+  end
+
+  local list = {}
+  if mapID then list = (mapID == mm.mapID and not mm.dirty) and mm.list or BuildList(mapID) end
+  local expire = huge
   if #list > 0 then
-    local cw, ch = canvas:GetSize()
-    -- the canvas is scaled to fit the window: size pins so they stay the same size on screen
-    local unit = UIParent:GetEffectiveScale() / canvas:GetEffectiveScale()
     local ok, level = pcall(function()
       return WorldMapFrame:GetPinFrameLevelsManager():GetValidFrameLevel("PIN_FRAME_LEVEL_AREA_POI")
     end)
@@ -402,12 +430,14 @@ local function UpdateWorldMap()
       StylePin(pin, e, MAP_MINE * unit, MAP_SEED * unit, 0.85, level)
       pin:SetPoint("CENTER", canvas, "TOPLEFT", e.x * cw, -e.y * ch)
       pin:Show()
+      expire = GreyUntil(e.node, now, expire)
     end
   end
   for i = #list + 1, #pins do
     pins[i].entry = nil
     pins[i]:Hide()
   end
+  wm.mapID, wm.cw, wm.ch, wm.unit, wm.shown, wm.expire, wm.dirty = mapID, cw, ch, unit, #list, expire, false
 end
 
 local function HookWorldMap()
@@ -419,8 +449,9 @@ local function HookWorldMap()
 end
 
 local function Refresh()
-  mm.dirty = true
-  local on = cfg.ores or cfg.herbs
+  mm.dirty, wm.dirty = true, true
+  Wake()
+  local on = AnyShown()
   if not on then HideMinimapPins() end
   driver:SetShown(on)
   UpdateWorldMap()
@@ -453,19 +484,19 @@ local function AddRecord(zone, x, y, w, h, record)
   zone[key] = record
 end
 
-local function Zone(kind, mapID)
-  local zone = DS[kind][mapID]
-  if not zone then zone = {}; DS[kind][mapID] = zone end
+local function Zone(def, mapID)
+  local zone = DS[def.key][mapID]
+  if not zone then zone = {}; DS[def.key][mapID] = zone end
   local w, h = ZoneSize(mapID)
   if not w then w, h = 4000, 4000 end
   return zone, w, h
 end
 
-local function Record(kind, name)
+local function Record(def, name)
   local mapID, x, y = PlayerPos()
   if not mapID then return end
-  local id = ResolveNode(kind, name)
-  local zone, w, h = Zone(kind, mapID)
+  local id = ResolveNode(def, name)
+  local zone, w, h = Zone(def, mapID)
   local now = time()
 
   local key = Nearest(zone, id, x, y, w, h, true, SAME_NODE)
@@ -486,16 +517,23 @@ local function Record(kind, name)
   Refresh()
 end
 
+-- for kinds detected by their own events: records the thing called `name` where you stand
+function ns.Record(key, name)
+  local def = BY_KEY[key]
+  if def and DS and type(name) == "string" and name ~= "" then Record(def, name) end
+end
+
 -- Shared.lua holds nodes other players found (built by tools/merge-found.js). Each new version of
--- it is merged into the dataset once. Your own nodes always win over it.
+-- it is merged into the dataset once. Your own nodes always win over it. Kinds this version of the
+-- addon does not have are left out.
 local function ApplyShared()
   local shared = SkipLoadingShared
   SkipLoadingShared = nil
   if type(shared) ~= "table" or not shared.stamp or shared.stamp == DS.sharedStamp then return end
   local added = 0
-  for kind in pairs(NAME_TO_ID) do
-    for mapID, nodes in pairs(shared[kind] or {}) do
-      local zone, w, h = Zone(kind, mapID)
+  for _, def in ipairs(KINDS) do
+    for mapID, nodes in pairs(shared[def.key] or {}) do
+      local zone, w, h = Zone(def, mapID)
       for coord, s in pairs(nodes) do
         local x, y = Decode(coord)
         local key = Nearest(zone, s.id, x, y, w, h, true, SAME_NODE)
@@ -514,9 +552,9 @@ local function ApplyShared()
 end
 
 ---------------------------------------------------------------- commands
-local function Count(kind)
+local function Count(def)
   local mine, seed, shared = 0, 0, 0
-  for _, zone in pairs(DS[kind]) do
+  for _, zone in pairs(DS[def.key]) do
     for _, node in pairs(zone) do
       if type(node) ~= "table" then seed = seed + 1
       elseif node.shared then shared = shared + 1
@@ -526,21 +564,25 @@ local function Count(kind)
   return mine, seed, shared
 end
 
-local KIND_WORDS = { ores = "ores", ore = "ores", mining = "ores", herbs = "herbs", herb = "herbs" }
+local function KindList()
+  local keys = {}
+  for i, def in ipairs(KINDS) do keys[i] = "|cffffffff" .. def.key .. "|r" end
+  return table.concat(keys, ", ")
+end
 
 SLASH_SKIPLOADING1, SLASH_SKIPLOADING2 = "/sl", "/skiploading"
 SlashCmdList.SKIPLOADING = function(msg)
-  local verb, what = (msg or ""):lower():match("^%s*(%S*)%s*(%S*)")
+  local verb, what = (msg or ""):lower():match("^%s*(%S*)%s*(.-)%s*$")
   if verb == "show" or verb == "hide" then
-    local kind = KIND_WORDS[what]
-    if what ~= "" and what ~= "all" and not kind then
-      say("I know |cffffffffores|r and |cffffffffherbs|r, not '" .. what .. "'.")
+    local only = BY_WORD[what]
+    if what ~= "" and what ~= "all" and not only then
+      say("I know " .. KindList() .. " and |cffffffffall|r, not '" .. what .. "'.")
       return
     end
-    for k in pairs(NAME_TO_ID) do
-      if not kind or kind == k then
-        cfg[k] = (verb == "show")
-        say(k .. (cfg[k] and " shown." or " hidden."))
+    for _, def in ipairs(KINDS) do
+      if not only or only == def then
+        cfg[def.key] = (verb == "show")
+        say(def.key .. (cfg[def.key] and " shown." or " hidden."))
       end
     end
     Refresh()
@@ -551,25 +593,18 @@ SlashCmdList.SKIPLOADING = function(msg)
     say("|cffffffffWTF\\Account\\<your account>\\SavedVariables\\SkipLoading.lua|r")
     return
   end
-  if verb == "skill" then
-    for _, k in ipairs({ "ores", "herbs" }) do
-      local skill, how = PlayerSkill(k)
-      say(SKILL_NAME[k] .. ": " .. (skill and (skill .. " (read from " .. how .. ")") or "not found"))
-    end
-    local n = GetNumSkillLines and GetNumSkillLines()
-    say("skill list entries: " .. tostring(n))
-    for i = 1, n or 0 do
-      local name, isHeader, isExpanded, rank = GetSkillLineInfo(i)
-      say(("  %s%s %s"):format(tostring(name), isHeader and (isExpanded and " [header]" or " [header, collapsed]") or "", isHeader and "" or tostring(rank)))
-    end
+  if COMMANDS[verb] then
+    COMMANDS[verb](what)
     return
   end
-  for _, k in ipairs({ "ores", "herbs" }) do
-    local mine, seed, shared = Count(k)
-    say(("%s %s: %d found by you, %d by other players, %d imported"):format(k,
-      cfg[k] and "|cff00ff00shown|r" or "|cffff5555hidden|r", mine, shared, seed))
+  for _, def in ipairs(KINDS) do
+    local mine, seed, shared = Count(def)
+    say(("%s %s: %d found by you, %d by other players, %d imported"):format(def.key,
+      cfg[def.key] and "|cff00ff00shown|r" or "|cffff5555hidden|r", mine, shared, seed))
   end
-  say("/sl show ores  |  /sl hide ores  |  /sl show herbs  |  /sl hide herbs  |  /sl export")
+  local help = { "/sl show <kind>  |  /sl hide <kind>  (" .. KindList() .. ", all)", "/sl export" }
+  for _, h in ipairs(COMMAND_HELP) do help[#help + 1] = h end
+  say(table.concat(help, "  |  "))
 end
 
 ---------------------------------------------------------------- events
@@ -577,35 +612,66 @@ local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
 events:RegisterEvent("UNIT_SPELLCAST_SENT")
-events:SetScript("OnEvent", function(_, event, a1, a2, _, a4)
+-- these only bring the minimap back to full speed sooner; a client without them still works
+local WAKE = { PLAYER_STARTED_MOVING = true, PLAYER_STARTED_TURNING = true, MINIMAP_UPDATE_ZOOM = true }
+for event in pairs(WAKE) do pcall(events.RegisterEvent, events, event) end
+-- event -> list of { def, handler } from the kinds' `events`
+local kindEvents = {}
+
+local function Init()
+  SkipLoadingDB = SkipLoadingDB or {}
+  cfg = SkipLoadingDB
+  local imported = type(SkipLoadingForeverDataSet) ~= "table"
+  if imported then SkipLoadingForeverDataSet = SkipLoadingSeed() end
+  SkipLoadingSeed = nil
+  DS = SkipLoadingForeverDataSet
+  for _, def in ipairs(KINDS) do
+    DS[def.key] = DS[def.key] or {}
+    if cfg[def.key] == nil then cfg[def.key] = (def.shown ~= false) end
+    for event, handler in pairs(def.events or {}) do
+      if not kindEvents[event] then
+        kindEvents[event] = {}
+        pcall(events.RegisterEvent, events, event)
+      end
+      table.insert(kindEvents[event], { def, handler })
+    end
+  end
+  if imported then
+    local counts, total = {}, 0
+    for _, def in ipairs(KINDS) do
+      local _, seed = Count(def)
+      if seed > 0 then counts[#counts + 1] = seed .. " " .. def.key end
+      total = total + seed
+    end
+    say(("created SkipLoadingForeverDataSet with %d locations (%s). Type /sl for options.")
+      :format(total, table.concat(counts, ", ")))
+  end
+end
+
+events:SetScript("OnEvent", function(_, event, ...)
   if event == "ADDON_LOADED" then
-    if a1 ~= ADDON then
+    if ... ~= ADDON then
       if cfg then HookWorldMap() end -- in case the world map loads after us
+      if wm.hooked then events:UnregisterEvent("ADDON_LOADED") end
       return
     end
-    SkipLoadingDB = SkipLoadingDB or {}
-    cfg = SkipLoadingDB
-    if cfg.ores == nil then cfg.ores = true end
-    if cfg.herbs == nil then cfg.herbs = true end
-    local imported = type(SkipLoadingForeverDataSet) ~= "table"
-    if imported then SkipLoadingForeverDataSet = SkipLoadingSeed() end
-    SkipLoadingSeed = nil
-    DS = SkipLoadingForeverDataSet
-    DS.ores, DS.herbs = DS.ores or {}, DS.herbs or {}
-    if imported then
-      local _, ores = Count("ores")
-      local _, herbs = Count("herbs")
-      say(("created SkipLoadingForeverDataSet with %d ore and %d herb locations. Type /sl for options."):format(ores, herbs))
-    end
+    Init()
   elseif event == "PLAYER_LOGIN" then
     ApplyShared()
     HookWorldMap()
+    if wm.hooked then events:UnregisterEvent("ADDON_LOADED") end
     Refresh()
   elseif event == "UNIT_SPELLCAST_SENT" then
     -- (unit, target, castGUID, spellID): for a gathering cast the target is the node's name
-    if a1 == "player" and DS and type(a2) == "string" and a2 ~= "" then
-      local kind = SpellKind(a4)
-      if kind then Record(kind, a2) end
+    local unit, target, _, spellID = ...
+    if unit == "player" and DS and type(target) == "string" and target ~= "" then
+      local def = SpellKind(spellID)
+      if def then Record(def, target) end
     end
+  end
+  if WAKE[event] then Wake() end
+  local handlers = DS and kindEvents[event]
+  if handlers then
+    for _, h in ipairs(handlers) do h[2](h[1], ...) end
   end
 end)

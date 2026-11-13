@@ -6,8 +6,8 @@ minimap. Built for **WoW Forever** (interface 16001).
 It starts from an imported set of locations, then learns from what you actually gather. Nodes you
 found yourself are trusted over the imported ones, and are drawn so you can tell them apart.
 
-There is no settings window and no library dependency: one Lua file, a data file, and a few chat
-commands.
+There is no settings window and no library dependency: a small core, one short file per kind of
+thing it shows, a data file, and a few chat commands.
 
 ## Install
 
@@ -28,15 +28,22 @@ On first login you should see a chat line saying the dataset was created.
 
 ## Commands
 
+This is every command the addon has. `/skiploading` works in place of `/sl` in all of them, and
+upper or lower case does not matter.
+
 | Command | What it does |
 | --- | --- |
-| `/sl` | Shows the counts and whether ores and herbs are shown |
-| `/sl show ores` / `/sl hide ores` | Ore pins on the map and minimap |
-| `/sl show herbs` / `/sl hide herbs` | Herb pins on the map and minimap |
-| `/sl export` | Reminds you where your saved file is, for sharing your nodes |
-| `/sl skill` | Prints the profession skill the addon detected (for troubleshooting) |
+| `/sl` | For each kind (ores, herbs): whether it is shown, and how many locations you found, other players found, and were imported. Then a short list of the commands. Any word the addon does not know does the same. |
+| `/sl show ores` | Shows ore pins on the world map and minimap. `/sl show ore` and `/sl show mining` do the same. |
+| `/sl hide ores` | Hides ore pins. Also `/sl hide ore`, `/sl hide mining`. |
+| `/sl show herbs` | Shows herb pins on the world map and minimap. `/sl show herb` and `/sl show herbalism` do the same. |
+| `/sl hide herbs` | Hides herb pins. Also `/sl hide herb`, `/sl hide herbalism`. |
+| `/sl show all` | Shows every kind. `/sl show` on its own does the same. |
+| `/sl hide all` | Hides every kind. `/sl hide` on its own does the same. With everything hidden the addon does no work at all. |
+| `/sl export` | Tells you where your saved file is, for sharing the nodes you found (see [Sharing](#sharing-nodes)). |
+| `/sl skill` | Troubleshooting: prints the Mining and Herbalism skill the addon read and where it read it from, then your whole skill list. Use it when a pin's colour or "you don't have it" looks wrong. |
 
-`/skiploading` works in place of `/sl`.
+Show and hide settings are remembered across sessions and shared by all your characters.
 
 ## What the pins mean
 

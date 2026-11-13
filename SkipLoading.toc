@@ -10,3 +10,6 @@
 Seed.lua
 Shared.lua
 SkipLoading.lua
+Kinds\Gathering.lua
+Kinds\Ores.lua
+Kinds\Herbs.lua

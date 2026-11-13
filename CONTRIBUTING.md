@@ -39,14 +39,16 @@ Open an issue and include:
 ## Contributing code
 
 The addon is meant to stay very small. Before adding a feature, open an issue to talk about it.
-Changes that add a settings window, a library dependency, or a new kind of data are likely to be
-declined.
+Changes that add a settings window or a library dependency are likely to be declined. A new kind of
+thing to show is welcome as its own file in `Kinds` (see below), but talk about it first too.
 
 Layout:
 
 | File | Purpose |
 | --- | --- |
-| `SkipLoading.lua` | The whole addon |
+| `SkipLoading.lua` | The core: dataset, pins, map, minimap, recording, sharing, commands |
+| `Kinds/Gathering.lua` | What the gathering kinds share: skill colours, detection by gathering spell |
+| `Kinds/Ores.lua`, `Kinds/Herbs.lua` | One definition per kind: names, icons, skill needed, spells |
 | `SkipLoading.toc` | Addon manifest |
 | `Seed.lua` | Generated. The imported locations. Do not edit by hand. |
 | `Shared.lua` | Generated. Nodes found by other players. Do not edit by hand. |
@@ -56,12 +58,24 @@ Layout:
 Guidelines:
 
 - Keep it light. No work every frame that can be done once a second, and nothing running while
-  both ores and herbs are hidden.
+  every kind is hidden.
 - The saved dataset is players' data. A change to its format must keep reading existing datasets.
 - Never write to another addon's files. The tools only read GatherMate2_Data.
 - Test in the game before opening a pull request: log in fresh, gather a node, check the world
   map and the minimap, and `/reload` to check the data survives.
 - Say in the pull request what you tested and on which game build.
+
+### Adding a kind of thing
+
+The core knows nothing about ores or herbs. Each kind is one file in `Kinds` that calls
+`ns.RegisterKind` (or `ns.GatheringKind` for a gathering profession), listed in `SkipLoading.toc`
+after `SkipLoading.lua`. The fields are described at the top of the "kinds" section of
+`SkipLoading.lua`. In short: a `key` (its table in the saved data, never renamed later), the
+`words` `/sl show` accepts, the `nodes` it knows with their names and icons, and how it is
+detected: `spells` whose cast target is the thing's name, or `events` handlers that call
+`ns.Record(key, name)`. A `Tooltip` function is optional.
+
+Pins, the minimap, sharing, `/sl` and `tools/merge-found.js` pick a new kind up without changes.
 
 `tools/contrib/` is ignored by git on purpose: it holds other players' raw files and should never
 be committed.

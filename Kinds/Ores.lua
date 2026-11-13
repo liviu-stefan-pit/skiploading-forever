@@ -6,6 +6,7 @@ ns.GatheringKind({
   words = { "ore", "mining" },
   skill = "Mining", skillSpell = 2575, skillLine = 186,
   spells = { 2575, 2576, 3564, 10248 },
+  track = 2580, -- Find Minerals
   fallbackIcon = "Interface\\Icons\\Trade_Mining",
   nodes = {
     -- id = { name, icon item, skill needed }

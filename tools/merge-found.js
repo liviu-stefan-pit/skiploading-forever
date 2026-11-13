@@ -5,8 +5,9 @@
 //      replaces their old one. Your own file can go in there too.
 //   2. Run:  node merge-found.js
 //
-// Only nodes a player gathered themselves are taken: imported points and nodes that reached them
-// through an earlier Shared.lua are skipped. Shared.lua is rebuilt from scratch on every run, so
+// Only nodes a player found themselves are taken: imported points and nodes that reached them
+// through an earlier Shared.lua are skipped. Nodes a player only spotted on the minimap are taken
+// too and stay marked as spotted; where someone gathered the same node, the gathered one wins. Shared.lua is rebuilt from scratch on every run, so
 // running it twice never counts anything twice.
 //
 //   node merge-found.js fileA.lua fileB.lua     use these files instead of tools\contrib
@@ -17,6 +18,8 @@ const path = require("path");
 // Two players' records of the same node type this close together are one node. In units of 0.01%
 // of the map: about 8 yards in an ordinary zone, 15 in the largest.
 const SAME = 15;
+// The same for nodes only spotted on the minimap, whose positions are less exact: about 20 yards.
+const SAME_SPOTTED = 40;
 
 // ---- reader for the Lua the game writes into saved variable files
 function parseLua(src) {
@@ -117,10 +120,12 @@ for (const file of files) {
           Number.isFinite(node.seen) && Number.isFinite(node.last) && Number.isFinite(Number(coord));
         if (!valid) continue;
         const c = Number(coord);
-        const p = { x: Math.floor(c / 1e6), y: Math.floor((c % 1e6) / 100), id: node.id,
+        const tracked = node.tracked === true;
+        const p = { x: Math.floor(c / 1e6), y: Math.floor((c % 1e6) / 100), id: node.id, tracked,
                     seen: node.seen, last: node.last, build: Number(node.build) || 0, by: 1 };
         const list = ((found[kind][map] = found[kind][map] || []));
-        const same = list.find(q => q.id === p.id && Math.hypot(q.x - p.x, q.y - p.y) <= SAME);
+        const reach = tracked ? SAME_SPOTTED : SAME;
+        const same = list.find(q => q.id === p.id && q.tracked === tracked && Math.hypot(q.x - p.x, q.y - p.y) <= reach);
         if (same) {
           if (p.seen > same.seen) { same.x = p.x; same.y = p.y; } // keep the spot of whoever saw it most
           same.seen += p.seen; same.by++;
@@ -132,6 +137,15 @@ for (const file of files) {
   }
   players++;
   console.log(`${path.basename(file)}: ${count} nodes found by this player`);
+}
+
+// a spotted node where someone gathered the same type is that gathered node, less exactly
+for (const maps of Object.values(found)) {
+  for (const [map, list] of Object.entries(maps)) {
+    const gathered = list.filter(p => !p.tracked);
+    maps[map] = list.filter(p => !p.tracked ||
+      !gathered.some(q => q.id === p.id && Math.hypot(q.x - p.x, q.y - p.y) <= SAME_SPOTTED));
+  }
 }
 
 // ---- write
@@ -148,7 +162,7 @@ for (const kind of Object.keys(found).sort()) {
       let key = p.x * 1e6 + p.y * 100;
       while (used.has(key)) key++;
       used.add(key);
-      body += `\t\t\t[${key}]={id=${luaId(p.id)},seen=${p.seen},last=${p.last},build=${p.build}},\n`;
+      body += `\t\t\t[${key}]={id=${luaId(p.id)},seen=${p.seen},last=${p.last},build=${p.build}${p.tracked ? ",tracked=true" : ""}},\n`;
       total[kind]++;
     }
     body += `\t\t},\n`;

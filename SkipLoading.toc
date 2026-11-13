@@ -10,6 +10,8 @@
 Seed.lua
 Shared.lua
 SkipLoading.lua
+RouteSolver.lua
+Route.lua
 Kinds\Gathering.lua
 Kinds\Ores.lua
 Kinds\Herbs.lua

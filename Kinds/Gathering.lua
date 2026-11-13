@@ -74,6 +74,22 @@ local function Useful(def, strict)
   end, note
 end
 
+-- for routes with the skill-up filter on: how much a node type is worth to you now. Orange always
+-- skills up, yellow often, green rarely; grey and red are worth nothing for skill
+local function Worth(def)
+  local skill, nodes = PlayerSkill(def), def.nodes
+  return function(id)
+    local n = nodes[id]
+    local req = n and n[3]
+    if not req or not skill then return 1 end
+    if skill < req then return 0 end
+    if skill < req + 25 then return 1 end
+    if skill < req + 50 then return 0.8 end
+    if skill < req + 100 then return 0.4 end
+    return 0
+  end
+end
+
 -- your skill went up (or you learned or dropped the profession): the filter may show other nodes now.
 -- SKILL_LINES_CHANGED also fires for weapon skills, so only a change in this one counts.
 local function SkillChanged(def)
@@ -93,9 +109,11 @@ function ns.GatheringKind(def)
     def.skillNameSet[castName] = true
     def.spellNames = { castName }
   end
+  if def.blips == nil then def.blips = true end -- Find Minerals / Find Herbs show them on the minimap
   def.Tooltip = Tooltip
   def.Skill = PlayerSkill
   def.Useful = Useful
+  def.Worth = Worth
   def.events = def.events or {}
   def.events.SKILL_LINES_CHANGED = SkillChanged
   return ns.RegisterKind(def)

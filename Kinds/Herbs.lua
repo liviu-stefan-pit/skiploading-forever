@@ -7,6 +7,7 @@ ns.GatheringKind({
   skill = "Herbalism", skillSpell = 9134, skillLine = 182,
   skillNames = { "Herb Gathering" },
   spells = { 2366, 2368, 3570, 11993 },
+  track = 2383, -- Find Herbs
   fallbackIcon = "Interface\\Icons\\INV_Misc_Flower_02",
   nodes = {
     -- id = { name, icon item, skill needed }

@@ -18,7 +18,8 @@ and your show/hide settings. It holds no character names, account names or anyth
 you. The account folder name is part of the file's path on your computer, not its contents, so
 please send only the file itself.
 
-What happens to it: only the nodes you gathered yourself are taken. They are merged with everyone
+What happens to it: only the nodes you found yourself are taken, gathered or spotted on the
+minimap. They are merged with everyone
 else's into `Shared.lua`, which ships with the addon and shows up as silver-ringed pins. Sending a
 newer file later replaces your earlier one, so nothing is counted twice.
 
@@ -61,8 +62,9 @@ Guidelines:
   every kind is hidden.
 - The saved dataset is players' data. A change to its format must keep reading existing datasets.
 - Never write to another addon's files. The tools only read GatherMate2_Data.
-- Test in the game before opening a pull request: log in fresh, gather a node, check the world
-  map and the minimap, and `/reload` to check the data survives.
+- Test in the game before opening a pull request: log in fresh, gather a node, hover a tracking
+  blip on the minimap, check the world map and the minimap, and `/reload` to check the data
+  survives.
 - Say in the pull request what you tested and on which game build.
 
 ### Adding a kind of thing
@@ -73,7 +75,9 @@ after `SkipLoading.lua`. The fields are described at the top of the "kinds" sect
 `SkipLoading.lua`. In short: a `key` (its table in the saved data, never renamed later), the
 `words` `/sl show` accepts, the `nodes` it knows with their names and icons, and how it is
 detected: `spells` whose cast target is the thing's name, or `events` handlers that call
-`ns.Record(key, name)`. A `Tooltip` function is optional.
+`ns.Record(key, name)`. A `Tooltip` function is optional. Set `blips = true` if a tracking ability
+shows the things on the minimap with their name as the tooltip, so they can be spotted there
+(gathering kinds have it on already).
 
 Pins, the minimap, sharing, `/sl` and `tools/merge-found.js` pick a new kind up without changes.
 

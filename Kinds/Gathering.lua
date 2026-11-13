@@ -60,6 +60,30 @@ local function Tooltip(def, id)
   end
 end
 
+-- the skill-up filter: orange, yellow and green nodes can raise your skill; strict keeps orange and
+-- yellow only. Red (can't gather) and grey (no skill-up) are hidden, and so is everything when you
+-- don't have the profession. A node type with no known requirement is always kept.
+local function Useful(def, strict)
+  local skill, nodes, top = PlayerSkill(def), def.nodes, strict and 50 or 100
+  local note = skill and (def.skillName .. " " .. skill) or ("no " .. def.skillName)
+  return function(id)
+    local n = nodes[id]
+    local req = n and n[3]
+    if not req then return true end
+    return skill ~= nil and skill >= req and skill < req + top
+  end, note
+end
+
+-- your skill went up (or you learned or dropped the profession): the filter may show other nodes now.
+-- SKILL_LINES_CHANGED also fires for weapon skills, so only a change in this one counts.
+local function SkillChanged(def)
+  local skill = PlayerSkill(def)
+  if skill ~= def.lastSkill then
+    def.lastSkill = skill
+    ns.UsefulChanged()
+  end
+end
+
 function ns.GatheringKind(def)
   def.skillName = ns.SpellName(def.skillSpell) or def.skill
   def.skillNameSet = { [def.skill] = true, [def.skillName] = true }
@@ -71,6 +95,9 @@ function ns.GatheringKind(def)
   end
   def.Tooltip = Tooltip
   def.Skill = PlayerSkill
+  def.Useful = Useful
+  def.events = def.events or {}
+  def.events.SKILL_LINES_CHANGED = SkillChanged
   return ns.RegisterKind(def)
 end
 

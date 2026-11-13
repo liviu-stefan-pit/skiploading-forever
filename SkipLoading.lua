@@ -12,7 +12,10 @@
 --           (gap = shortest time in seconds between two sightings)
 --         = a table with shared = true: a node other players found, merged in from Shared.lua
 -- A node you record replaces the imported points of the same type around it.
--- SkipLoadingDB (saved variable) holds settings: SkipLoadingDB[key] = true when a kind is shown.
+-- SkipLoadingDB (saved variable) holds settings, shared by all characters:
+--   [key]    = true when a kind is shown
+--   pick     = { [key] = { [id] = true } }: a shown kind draws only these types; no entry = all of them
+--   skillups = nil, "on" or "strict": draw only nodes that can raise your skill (see "filters")
 local ADDON, ns = ...
 
 local floor, sin, cos, huge, pairs, ipairs, type, time = math.floor, math.sin, math.cos, math.huge, pairs, ipairs, type, time
@@ -53,12 +56,17 @@ ns.SpellName = SpellName
 --   spells        optional: spell ids whose cast target is the name of a thing of this kind
 --   spellNames    optional: spell names that count the same, for ranks the ids above miss
 --   Tooltip       optional: function(def, id) adding the first tooltip lines; default is the name
---   events        optional: { EVENT = function(def, ...) } for kinds detected some other way;
+--   Useful        optional: function(def, strict) for the skill-up filter, returning a function(id)
+--                 that says whether a thing of that type is worth showing now (strict = only the
+--                 ones that pay off often), and a short note on why, e.g. "Mining 140". Called once
+--                 each time the pins are rebuilt. Kinds without it are not touched by the filter.
+--   events       optional: { EVENT = function(def, ...) } for kinds detected some other way;
 --                 they call ns.Record(def.key, name) to record a thing where the player stands
 -- Kinds register while the addon's files load, before ADDON_LOADED, and draw in that order.
 local KINDS, BY_KEY, BY_WORD = {}, {}, {}
 local SPELL_IDS, SPELL_NAMES = {}, {}
-local RESERVED = { version = true, source = true, sharedStamp = true } -- other fields of the dataset
+-- other fields of the dataset and of the settings
+local RESERVED = { version = true, source = true, sharedStamp = true, pick = true, skillups = true }
 ns.kinds = KINDS
 
 function ns.RegisterKind(def)
@@ -175,15 +183,20 @@ local function Ago(t)
   return Span(s) .. " ago"
 end
 
--- every node to draw on one map, as { x, y, def, node }
+-- every node to draw on one map, after the filters, as { x, y, def, node }
 local function BuildList(mapID)
   local list = {}
   for _, def in ipairs(KINDS) do
     local zone = cfg[def.key] and DS[def.key][mapID]
     if zone then
+      local pick = cfg.pick[def.key]
+      local useful = cfg.skillups and def.Useful and def.Useful(def, cfg.skillups == "strict")
       for coord, node in pairs(zone) do
-        local x, y = Decode(coord)
-        list[#list + 1] = { x = x, y = y, def = def, node = node }
+        local id = type(node) == "table" and node.id or node
+        if (not pick or pick[id]) and (not useful or useful(id)) then
+          local x, y = Decode(coord)
+          list[#list + 1] = { x = x, y = y, def = def, node = node }
+        end
       end
     end
   end
@@ -457,6 +470,11 @@ local function Refresh()
   UpdateWorldMap()
 end
 
+-- for kinds whose Useful answer just changed (your skill went up): redraw if the filter is on
+function ns.UsefulChanged()
+  if cfg and cfg.skillups then Refresh() end
+end
+
 ---------------------------------------------------------------- recording
 -- nearest node of one type within `radius` yards of a spot: among the records (yours and other
 -- players') or among the imported points. Returns its coord key.
@@ -551,6 +569,161 @@ local function ApplyShared()
   if added > 0 then say(added .. " new locations found by other players were added.") end
 end
 
+---------------------------------------------------------------- filters
+-- /sl show, hide and only take kinds and node types in any mix: "herbs", "iron", "iron, gold, herbs".
+-- A kind word means the whole kind. Any other word is matched against node names: whole words
+-- first ("silver" is Silver Vein, not Silverleaf), then the start of a word ("peace" is Peacebloom).
+
+-- the types one term names, as a list of { def, id }; id nil = the whole kind. nil if nothing matched
+local function Match(term)
+  local def = BY_WORD[term]
+  if def then return { { def } } end
+  for pass = 1, 2 do
+    local hits, find = {}, (pass == 1) and (" " .. term .. " ") or (" " .. term)
+    for _, d in ipairs(KINDS) do
+      for id, n in pairs(d.nodes) do
+        if (" " .. n[1]:lower() .. " "):find(find, 1, true) then hits[#hits + 1] = { d, id } end
+      end
+    end
+    if #hits > 0 then return hits end
+  end
+end
+
+-- "iron, gold" or "iron gold" -> { [def] = true (the whole kind) or { [id] = true } }, unknown terms
+local function Resolve(what)
+  local found, unknown = {}, {}
+  local function add(hits)
+    for _, h in ipairs(hits) do
+      local def, id = h[1], h[2]
+      if id == nil then found[def] = true
+      elseif found[def] ~= true then
+        found[def] = found[def] or {}
+        found[def][id] = true
+      end
+    end
+  end
+  for term in what:gmatch("[^,]+") do
+    term = term:match("^%s*(.-)%s*$")
+    if term ~= "" then
+      local hits = Match(term)
+      if hits then
+        add(hits)
+      else
+        -- no commas: "iron gold herbs" is three terms if each of them is known
+        local each = {}
+        for word in term:gmatch("%S+") do
+          each[#each + 1] = Match(word)
+          if not each[#each] then each = nil; break end
+        end
+        if each and #each > 1 then
+          for _, hits in ipairs(each) do add(hits) end
+        else
+          unknown[#unknown + 1] = term
+        end
+      end
+    end
+  end
+  return found, unknown
+end
+
+local function Copy(t)
+  local c = {}
+  for k, v in pairs(t) do c[k] = v end
+  return c
+end
+
+-- only: exactly what was named, everything else hidden
+local function FilterOnly(found)
+  for _, def in ipairs(KINDS) do
+    local f = found[def]
+    cfg[def.key] = f and true or false
+    cfg.pick[def.key] = type(f) == "table" and Copy(f) or nil
+  end
+end
+
+-- show: add what was named to what is drawn
+local function FilterShow(found)
+  for def, f in pairs(found) do
+    local key, pick = def.key, cfg.pick[def.key]
+    if f == true then
+      cfg[key], cfg.pick[key] = true, nil
+    elseif not cfg[key] then
+      cfg[key], cfg.pick[key] = true, Copy(f)
+    elseif pick then
+      for id in pairs(f) do pick[id] = true end
+    end -- else the whole kind is already drawn
+  end
+end
+
+-- hide: take what was named away from what is drawn
+local function FilterHide(found)
+  for def, f in pairs(found) do
+    local key = def.key
+    if f == true then
+      cfg[key], cfg.pick[key] = false, nil
+    elseif cfg[key] then
+      local pick = cfg.pick[key]
+      if not pick then
+        -- the whole kind was drawn: keep every type except these
+        pick = {}
+        for id in pairs(def.nodes) do pick[id] = true end
+      end
+      for id in pairs(f) do pick[id] = nil end
+      if next(pick) then cfg.pick[key] = pick else cfg[key], cfg.pick[key] = false, nil end
+    end
+  end
+end
+
+local function ShowAll(on)
+  for _, def in ipairs(KINDS) do cfg[def.key], cfg.pick[def.key] = on, nil end
+end
+
+-- one line saying what is drawn now, and how many pins that makes in the zone you are in
+local function Summary()
+  local parts = {}
+  for _, def in ipairs(KINDS) do
+    if cfg[def.key] then
+      local pick = cfg.pick[def.key]
+      if pick then
+        -- name the shorter list: the types drawn, or the ones left out
+        local names, left = {}, {}
+        for id in pairs(pick) do names[#names + 1] = NodeName(def, id) end
+        for id in pairs(def.nodes) do
+          if not pick[id] then left[#left + 1] = NodeName(def, id) end
+        end
+        if #left < #names then
+          table.sort(left)
+          parts[#parts + 1] = "|cffffffffall " .. def.key .. " except " .. table.concat(left, ", ") .. "|r"
+        else
+          table.sort(names)
+          parts[#parts + 1] = "|cffffffff" .. table.concat(names, ", ") .. "|r"
+        end
+      else
+        parts[#parts + 1] = "|cffffffffall " .. def.key .. "|r"
+      end
+    end
+  end
+  if #parts == 0 then
+    say("showing nothing. |cffffffff/sl show all|r or |cffffffff/sl reset|r to bring pins back.")
+    return
+  end
+  local line = "showing " .. table.concat(parts, " + ")
+  if cfg.skillups then
+    local notes = {}
+    for _, def in ipairs(KINDS) do
+      if cfg[def.key] and def.Useful then
+        local _, note = def.Useful(def, cfg.skillups == "strict")
+        if note then notes[#notes + 1] = note end
+      end
+    end
+    line = line .. (cfg.skillups == "strict" and ", only orange and yellow" or ", only skill-ups")
+      .. (#notes > 0 and " (" .. table.concat(notes, ", ") .. ")" or "")
+  end
+  local mapID = PlayerPos()
+  if mapID then line = line .. ". " .. #BuildList(mapID) .. " in this zone." end
+  say(line)
+end
+
 ---------------------------------------------------------------- commands
 local function Count(def)
   local mine, seed, shared = 0, 0, 0
@@ -573,19 +746,50 @@ end
 SLASH_SKIPLOADING1, SLASH_SKIPLOADING2 = "/sl", "/skiploading"
 SlashCmdList.SKIPLOADING = function(msg)
   local verb, what = (msg or ""):lower():match("^%s*(%S*)%s*(.-)%s*$")
-  if verb == "show" or verb == "hide" then
-    local only = BY_WORD[what]
-    if what ~= "" and what ~= "all" and not only then
-      say("I know " .. KindList() .. " and |cffffffffall|r, not '" .. what .. "'.")
-      return
-    end
-    for _, def in ipairs(KINDS) do
-      if not only or only == def then
-        cfg[def.key] = (verb == "show")
-        say(def.key .. (cfg[def.key] and " shown." or " hidden."))
+  if verb == "show" or verb == "hide" or verb == "only" then
+    if what == "" or what == "all" then
+      ShowAll(verb ~= "hide")
+    else
+      local found, unknown = Resolve(what)
+      if #unknown > 0 then
+        say("I don't know '" .. table.concat(unknown, "', '") .. "'. Use a kind (" .. KindList()
+          .. ") or part of a node name, e.g. |cffffffff/sl only iron, gold|r.")
+        if not next(found) then return end
       end
+      if verb == "only" then FilterOnly(found)
+      elseif verb == "show" then FilterShow(found)
+      else FilterHide(found) end
     end
     Refresh()
+    Summary()
+    return
+  end
+  if verb == "skillups" or verb == "skillup" or verb == "xp" then
+    -- "/sl xp mining" or "/sl xp strict iron": only those, and the filter on
+    local strict, rest = what:match("^(strict)%s*(.*)$")
+    if strict then what = rest end
+    if what == "on" or (strict and what == "") then cfg.skillups = strict and "strict" or "on"
+    elseif what == "off" then cfg.skillups = nil
+    elseif what == "" then cfg.skillups = not cfg.skillups and "on" or nil
+    else
+      local found, unknown = Resolve(what)
+      if #unknown > 0 then
+        say("I don't know '" .. table.concat(unknown, "', '") .. "'. Try |cffffffff/sl xp mining|r, "
+          .. "|cffffffff/sl xp herbs|r or |cffffffff/sl xp strict|r.")
+        if not next(found) then return end
+      end
+      FilterOnly(found)
+      cfg.skillups = strict and "strict" or "on"
+    end
+    Refresh()
+    Summary()
+    return
+  end
+  if verb == "reset" then
+    ShowAll(true)
+    cfg.skillups = nil
+    Refresh()
+    Summary()
     return
   end
   if verb == "export" then
@@ -602,7 +806,9 @@ SlashCmdList.SKIPLOADING = function(msg)
     say(("%s %s: %d found by you, %d by other players, %d imported"):format(def.key,
       cfg[def.key] and "|cff00ff00shown|r" or "|cffff5555hidden|r", mine, shared, seed))
   end
-  local help = { "/sl show <kind>  |  /sl hide <kind>  (" .. KindList() .. ", all)", "/sl export" }
+  Summary()
+  local help = { "/sl only|show|hide <kinds or nodes>  (" .. KindList() .. ", all, or names: iron, gold ...)",
+    "/sl xp [strict] [mining, herbs, iron ...]", "/sl reset", "/sl export" }
   for _, h in ipairs(COMMAND_HELP) do help[#help + 1] = h end
   say(table.concat(help, "  |  "))
 end
@@ -621,6 +827,7 @@ local kindEvents = {}
 local function Init()
   SkipLoadingDB = SkipLoadingDB or {}
   cfg = SkipLoadingDB
+  cfg.pick = type(cfg.pick) == "table" and cfg.pick or {}
   local imported = type(SkipLoadingForeverDataSet) ~= "table"
   if imported then SkipLoadingForeverDataSet = SkipLoadingSeed() end
   SkipLoadingSeed = nil

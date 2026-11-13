@@ -33,17 +33,41 @@ upper or lower case does not matter.
 
 | Command | What it does |
 | --- | --- |
-| `/sl` | For each kind (ores, herbs): whether it is shown, and how many locations you found, other players found, and were imported. Then a short list of the commands. Any word the addon does not know does the same. |
-| `/sl show ores` | Shows ore pins on the world map and minimap. `/sl show ore` and `/sl show mining` do the same. |
-| `/sl hide ores` | Hides ore pins. Also `/sl hide ore`, `/sl hide mining`. |
-| `/sl show herbs` | Shows herb pins on the world map and minimap. `/sl show herb` and `/sl show herbalism` do the same. |
-| `/sl hide herbs` | Hides herb pins. Also `/sl hide herb`, `/sl hide herbalism`. |
-| `/sl show all` | Shows every kind. `/sl show` on its own does the same. |
-| `/sl hide all` | Hides every kind. `/sl hide` on its own does the same. With everything hidden the addon does no work at all. |
+| `/sl` | For each kind (ores, herbs): whether it is shown, and how many locations you found, other players found, and were imported. Then what is shown right now and a short list of the commands. Any word the addon does not know does the same. |
+| `/sl only <what>` | Shows exactly what you name and hides everything else. |
+| `/sl show <what>` | Adds what you name to what is shown. |
+| `/sl hide <what>` | Takes what you name away from what is shown. |
+| `/sl show all` | Shows every node of every kind. `/sl show` on its own does the same. |
+| `/sl hide all` | Hides everything. `/sl hide` on its own does the same. With everything hidden the addon does no work at all. |
+| `/sl skillups` | Turns the skill-up filter on or off: only nodes that can still raise your skill (orange, yellow and green) are shown. Red and grey nodes are hidden, and so is a whole kind whose profession you don't have. `/sl xp` does the same. |
+| `/sl skillups strict` | The same, but only orange and yellow nodes, the ones that skill up most of the time. Also `/sl skillups on` and `/sl skillups off`. |
+| `/sl xp <what>` | Shortcut for `/sl only <what>` plus the skill-up filter on: `/sl xp mining` shows only the ores that can raise your Mining. `/sl xp strict mining` keeps only orange and yellow. |
+| `/sl reset` | Everything shown, skill-up filter off. |
 | `/sl export` | Tells you where your saved file is, for sharing the nodes you found (see [Sharing](#sharing-nodes)). |
 | `/sl skill` | Troubleshooting: prints the Mining and Herbalism skill the addon read and where it read it from, then your whole skill list. Use it when a pin's colour or "you don't have it" looks wrong. |
 
-Show and hide settings are remembered across sessions and shared by all your characters.
+`<what>` can be a kind (`ores`, `herbs`, also `ore`, `mining`, `herb`, `herbalism`), a node name
+or part of one, or several of these separated by commas or spaces. A word matches whole words in
+node names first, so `silver` is Silver Vein and not Silverleaf; if nothing matches it tries the
+start of a word, so `peace` finds Peacebloom.
+
+| Example | Shows |
+| --- | --- |
+| `/sl only herbs` | Herbs only. |
+| `/sl show ores` | Ores as well. |
+| `/sl only iron, gold` | Iron Deposit, Dark Iron Deposit, Gold Vein and Ooze Covered Gold Vein, nothing else. |
+| `/sl show kingsblood` | The same plus Kingsblood. |
+| `/sl hide copper` | Every ore except Copper Vein. |
+| `/sl xp mining` | Only the ore veins that can still raise your Mining skill. No herbs. |
+
+After each change the addon says in one line what is shown and how many pins that makes in your
+zone, e.g. *showing all ores except Copper Vein + all herbs, only skill-ups (Mining 140,
+Herbalism 60). 23 in this zone.* The type filter and the skill-up filter work together and are
+switched separately, so `/sl skillups` off brings back exactly what you had picked before.
+
+The skill-up filter follows your skill: when it goes up, the pins update by themselves. These
+settings are remembered across sessions and shared by all your characters; the skill-up filter
+always uses the skill of the character you are playing.
 
 ## What the pins mean
 
